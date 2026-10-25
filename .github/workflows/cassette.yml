@@ -31,7 +31,7 @@ jobs:
           const name = 'cassette.json';
           const type = '\u0085application/json';
           const created = await client.CreateArtifact({
-            ...ids, name, mimeType: StringValue.create({value:type}), version:7
+            ...ids, name, mimeType: StringValue.create({value:'application/json'}), version:7
           });
           if (!created.ok) throw Error('CreateArtifact failed');
           const initial = Buffer.from('{"full_name":"placeholder","owner":{"login":"x","avatar_url":"https://example.com"}}');
