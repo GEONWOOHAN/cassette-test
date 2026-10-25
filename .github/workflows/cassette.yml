@@ -16,24 +16,6 @@ jobs:
               core.setSecret(process.env[key]);
               core.exportVariable(key, process.env[key]);
             }
-      - name: Probe media type validation
-        run: |
-          npm install @actions/artifact@6.3.1
-          node --input-type=module <<'JS'
-          import { internalArtifactTwirpClient } from './node_modules/@actions/artifact/lib/internal/shared/artifact-twirp-client.js';
-          import { getBackendIdsFromToken } from './node_modules/@actions/artifact/lib/internal/shared/util.js';
-          import { StringValue } from './node_modules/@actions/artifact/lib/generated/index.js';
-          const client=internalArtifactTwirpClient(), ids=getBackendIdsFromToken();
-          const chars=['\u0085','\u001c','\u001d','\u001e','\u001f'];
-          let i=0;
-          for(const c of chars) for(const type of [c+'application/json','application/json'+c]) {
-            const name=`probe-${i++}.json`;
-            try {
-              const r=await client.CreateArtifact({...ids,name,mimeType:StringValue.create({value:type}),version:7});
-              console.log('ACCEPT',name,JSON.stringify(type),r.ok);
-            } catch(e) { console.log('REJECT',name,JSON.stringify(type),String(e.message).slice(-110)); }
-          }
-          JS
       - name: Publish test artifact
         run: |
           npm install @actions/artifact@6.3.1
@@ -46,10 +28,10 @@ jobs:
           const repo = process.env.GITHUB_REPOSITORY;
           const ids = getBackendIdsFromToken();
           const client = internalArtifactTwirpClient();
-          const name = 'cassette.json';
+          const name = 'legacy.zip';
           const type = '\u0085application/json';
           const created = await client.CreateArtifact({
-            ...ids, name, mimeType: StringValue.create({value:'application/json'}), version:7
+            ...ids, name, version:4
           });
           if (!created.ok) throw Error('CreateArtifact failed');
           const initial = Buffer.from('{"full_name":"placeholder","owner":{"login":"x","avatar_url":"https://example.com"}}');
