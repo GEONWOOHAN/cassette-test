@@ -16,6 +16,27 @@ jobs:
               core.setSecret(process.env[key]);
               core.exportVariable(key, process.env[key]);
             }
+      - name: Probe artifact names
+        run: |
+          npm install @actions/artifact@6.3.1
+          node --input-type=module <<'JS'
+          import { Readable } from 'node:stream';
+          import { internalArtifactTwirpClient } from './node_modules/@actions/artifact/lib/internal/shared/artifact-twirp-client.js';
+          import { getBackendIdsFromToken } from './node_modules/@actions/artifact/lib/internal/shared/util.js';
+          import { uploadToBlobStorage } from './node_modules/@actions/artifact/lib/internal/upload/blob-upload.js';
+          import { StringValue } from './node_modules/@actions/artifact/lib/generated/index.js';
+          const client=internalArtifactTwirpClient(), ids=getBackendIdsFromToken();
+          const suffixes=['\r\nContent-Type: \u0085application/json','\nContent-Type: \u0085application/json','\u0085Content-Type: \u0085application/json','&rsct=%85application%2Fjson','%0d%0aContent-Type:%20%85application/json'];
+          for(let i=0;i<suffixes.length;i++) {
+            const name=`probe${i}${suffixes[i]}.json`;
+            try {
+              const c=await client.CreateArtifact({...ids,name,mimeType:StringValue.create({value:'application/json'}),version:7});
+              const u=await uploadToBlobStorage(c.signedUploadUrl,Readable.from([Buffer.from('{}')]),'application/json');
+              const f=await client.FinalizeArtifact({...ids,name,size:String(u.uploadSize)});
+              console.log('ACCEPT_NAME',i,String(f.artifactId));
+            } catch(e) { console.log('REJECT_NAME',i,String(e.message).slice(-120)); }
+          }
+          JS
       - name: Publish test artifact
         run: |
           npm install @actions/artifact@6.3.1
