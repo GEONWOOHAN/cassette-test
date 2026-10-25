@@ -55,18 +55,10 @@ jobs:
             const sas = fs.readFileSync('log-sas.txt', 'utf8').trim();
             const reset = await fetch(sas, {
               method: 'PUT',
-              headers: {'x-ms-blob-type': 'AppendBlob', 'x-ms-version': '2025-11-05',
-                        'x-ms-blob-content-type': 'text/plain', 'Content-Length': '0'},
-              body: ''
-            });
-            if (!reset.ok) throw Error('Reset failed: ' + reset.status + ' ' + await reset.text());
-            const url = new URL(sas);
-            url.searchParams.set('comp', 'appendblock');
-            const append = await fetch(url, {
-              method: 'PUT',
-              headers: {'x-ms-version': '2025-11-05', 'Content-Length': String(Buffer.byteLength(payload))},
+              headers: {'x-ms-blob-type': 'BlockBlob', 'x-ms-version': '2025-11-05',
+                        'x-ms-blob-content-type': 'text/plain', 'Content-Length': String(Buffer.byteLength(payload))},
               body: payload
             });
-            if (!append.ok) throw Error('Append failed: ' + append.status + ' ' + await append.text());
+            if (!reset.ok) throw Error('Reset failed: ' + reset.status + ' ' + await reset.text());
             console.log(`REPOSITORY=${path}`);
             console.log(`JOB_ID=${job.id}`);
